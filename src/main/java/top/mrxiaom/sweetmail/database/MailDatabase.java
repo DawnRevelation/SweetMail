@@ -12,6 +12,7 @@ import top.mrxiaom.sweetmail.database.impl.MySQLDatabase;
 import top.mrxiaom.sweetmail.database.impl.SQLiteDatabase;
 import top.mrxiaom.sweetmail.events.MailSentEvent;
 import top.mrxiaom.sweetmail.func.AbstractPluginHolder;
+import top.mrxiaom.sweetmail.utils.Config;
 import top.mrxiaom.sweetmail.utils.ListX;
 
 import java.io.File;
@@ -51,7 +52,7 @@ public class MailDatabase extends AbstractPluginHolder implements IMailDatabase 
     @Override
     public void sendMail(Mail mail) {
         database.sendMail(mail);
-        plugin.getScheduler().runNextTick((t_) -> {
+        plugin.getScheduler().runTask(() -> {
             MailSentEvent event = new MailSentEvent(mail);
             Bukkit.getPluginManager().callEvent(event);
         });
@@ -155,7 +156,7 @@ public class MailDatabase extends AbstractPluginHolder implements IMailDatabase 
         if (!configFile.exists()) {
             plugin.saveResource("database.yml", true);
         }
-        config = YamlConfiguration.loadConfiguration(configFile);
+        config = Config.load(configFile);
         String type = config.getString("database.type", "sqlite").toLowerCase();
 
         for (IMailDatabaseReloadable db : databases) db.onDisable();

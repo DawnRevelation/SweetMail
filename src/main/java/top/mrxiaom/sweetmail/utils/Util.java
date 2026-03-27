@@ -2,6 +2,13 @@ package top.mrxiaom.sweetmail.utils;
 
 import com.google.common.collect.Lists;
 import com.google.common.io.ByteArrayDataOutput;
+import de.tr7zw.changeme.nbtapi.NBT;
+import de.tr7zw.changeme.nbtapi.NBTCompound;
+import de.tr7zw.changeme.nbtapi.NBTContainer;
+import de.tr7zw.changeme.nbtapi.NBTReflectionUtil;
+import de.tr7zw.changeme.nbtapi.iface.ReadWriteNBT;
+import de.tr7zw.changeme.nbtapi.utils.MinecraftVersion;
+import de.tr7zw.changeme.nbtapi.utils.nmsmappings.ReflectionMethod;
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.inventory.Book;
 import net.kyori.adventure.platform.bukkit.BukkitAudiences;
@@ -9,6 +16,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.title.Title;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
@@ -20,10 +28,14 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BookMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.jetbrains.annotations.NotNull;
+import top.mrxiaom.sweetmail.Messages;
 import top.mrxiaom.sweetmail.SweetMail;
 import top.mrxiaom.sweetmail.depend.ItemsAdder;
 import top.mrxiaom.sweetmail.depend.Mythic;
 import top.mrxiaom.sweetmail.depend.PAPI;
+import top.mrxiaom.sweetmail.utils.diapatcher.BukkitDispatcher;
+import top.mrxiaom.sweetmail.utils.diapatcher.FoliaDispatcher;
+import top.mrxiaom.sweetmail.utils.diapatcher.ICommandDispatcher;
 
 import java.io.*;
 import java.time.Duration;
@@ -32,15 +44,30 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.*;
+import java.util.function.Consumer;
 
 public class Util {
     private static BukkitAudiences adventure;
     public static final Map<String, OfflinePlayer> players = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     public static final Map<String, OfflinePlayer> playersByUUID = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    private static ICommandDispatcher dispatcher;
+
     public static void init(SweetMail plugin) {
-        adventure = BukkitAudiences.builder(plugin).build();
-        MiniMessageConvert.init();
-        plugin.getScheduler().runAsync((t_) -> {
+        try {
+            Bukkit.getServer().getClass().getDeclaredMethod("dispatchCmdAsync", CommandSender.class, String.class);
+            dispatcher = new FoliaDispatcher(plugin.getScheduler());
+        } catch (ReflectiveOperationException e) {
+            dispatcher = BukkitDispatcher.INSTANCE;
+        }
+        try {
+            adventure = BukkitAudiences.builder(plugin).build();
+            MiniMessageConvert.init();
+        } catch (LinkageError e) {
+            plugin.warn(plugin.getName() + " 的 adventure 相关库似乎出现了依赖冲突问题，请参考以下链接进行解决");
+            plugin.warn("https://plugins.mcio.dev/elopers/base/resolver-override");
+            throw e;
+        }
+        plugin.getScheduler().runTaskAsync(() -> {
             for (OfflinePlayer player : Bukkit.getOfflinePlayers()) {
                 if (player.getName() != null) {
                     players.put(player.getName(), player);
@@ -59,6 +86,10 @@ public class Util {
         ItemsAdder.init();
         Mythic.load();
         ItemStackUtil.init();
+    }
+
+    public static void dispatchCommand(@NotNull CommandSender sender, @NotNull String commandLine) {
+        dispatcher.dispatchCommand(sender, commandLine);
     }
 
     public static List<Character> toCharList(String s) {
@@ -151,6 +182,7 @@ public class Util {
         adventure(player).openBook(book);
     }
 
+    @SuppressWarnings({"deprecation", "ConstantValue"})
     public static void openBookLegacy(Player player, Book book) {
         player.closeInventory();
         ItemStack bookItem = new ItemStack(Material.WRITTEN_BOOK);
@@ -164,7 +196,19 @@ public class Util {
                 meta.addPage(legacy.serialize(page));
             }
             bookItem.setItemMeta(meta);
-            player.openBook(bookItem);
+            if (MinecraftVersion.isAtLeastVersion(MinecraftVersion.MC1_8_R3)) {
+                player.openBook(bookItem);
+            } else {
+                if (player.getGameMode().equals(GameMode.CREATIVE)) {
+                    ItemStack itemInHand = player.getItemInHand();
+                    if (itemInHand != null && !itemInHand.getType().equals(Material.AIR)) {
+                        Messages.legacy__1_7_10__need_empty_hand.tm(player);
+                        return;
+                    }
+                }
+                Util_v1_7_R4.openBook(SweetMail.getInstance(), player, bookItem);
+                Messages.legacy__1_7_10__need_right_click.tm(player);
+            }
         }
     }
 
@@ -297,6 +341,21 @@ public class Util {
             return true;
         } catch (ClassNotFoundException ignored) {
             return false;
+        }
+    }
+
+    public static ItemStack modify(ItemStack item, Consumer<ReadWriteNBT> consumer) {
+        if (MinecraftVersion.isAtLeastVersion(MinecraftVersion.MC1_8_R3)) {
+            NBT.modify(item, consumer::accept);
+            return item;
+        } else {
+            Object nmsItem;
+            nmsItem = ReflectionMethod.ITEMSTACK_NMSCOPY.run(null, item);
+            NBTContainer nbt = NBTReflectionUtil.convertNMSItemtoNBTCompound(nmsItem);
+            NBTCompound tag = nbt.getOrCreateCompound("tag");
+            consumer.accept(tag);
+            nmsItem = NBTReflectionUtil.convertNBTCompoundtoNMSItem(nbt);
+            return  (ItemStack) ReflectionMethod.ITEMSTACK_BUKKITMIRROR.run(null, nmsItem);
         }
     }
 

@@ -18,6 +18,7 @@ import top.mrxiaom.sweetmail.actions.IAction;
 import top.mrxiaom.sweetmail.depend.PAPI;
 import top.mrxiaom.sweetmail.func.AbstractPluginHolder;
 import top.mrxiaom.sweetmail.gui.IGui;
+import top.mrxiaom.sweetmail.utils.Config;
 import top.mrxiaom.sweetmail.utils.ItemStackUtil;
 import top.mrxiaom.sweetmail.utils.Pair;
 import top.mrxiaom.sweetmail.utils.Util;
@@ -68,10 +69,7 @@ public abstract class AbstractMenuConfig<T extends IGui> extends AbstractPluginH
             if (glow) {
                 ItemStackUtil.setGlow(item);
             }
-            NBT.modify(item, nbt -> {
-                nbt.setBoolean(ItemStackUtil.FLAG, true);
-            });
-            return item;
+            return Util.modify(item, nbt -> nbt.setBoolean(ItemStackUtil.FLAG, true));
         }
         @SafeVarargs
         public final ItemStack generateIcon(IGui gui, OfflinePlayer target, Pair<String, Object>... replacements) {
@@ -225,7 +223,7 @@ public abstract class AbstractMenuConfig<T extends IGui> extends AbstractPluginH
             plugin.saveResource(file, true);
         }
 
-        config = YamlConfiguration.loadConfiguration(configFile);
+        config = Config.load(configFile);
         ConfigurationSection section;
         title = config.getString("title", "菜单标题");
         inventory = String.join("", config.getStringList("inventory")).toCharArray();

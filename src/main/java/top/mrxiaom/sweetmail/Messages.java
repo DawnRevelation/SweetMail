@@ -31,6 +31,9 @@ public enum Messages implements IHolderAccessor {
             "  &f/mail players <接收者表达式> [--book/-b] &8-- &e计算接收者表达式最终的玩家列表（用于测试）",
             "  &f/mail reload database &8-- &3重载数据库",
             "  &f/mail reload &8-- &3重载配置文件"),
+    legacy__1_7_10__need_empty_hand("&e在创造模式下，为了避免将物品卡掉，需要&b空手&e才能浏览正文"),
+    legacy__1_7_10__need_right_click("&e出于版本限制，你需要按下&b鼠标右键&e来浏览正文"),
+
     ;
 
     Messages(String defaultValue) {
@@ -52,6 +55,8 @@ public enum Messages implements IHolderAccessor {
         reload("&a配置文件已重载 &7(如需重载数据库，请使用 &f/mail reload database&7)"),
         reload_database("&a数据库配置已重载，已重新连接数据库"),
 
+        player__not_online("&e玩家不在线 &7(或不存在)"),
+
         timed__info__display(
                 "&f定时发送序列: &e%id%",
                 "&f发送人: &e%sender%",
@@ -69,11 +74,18 @@ public enum Messages implements IHolderAccessor {
         send__failed("&e邮件发送失败: %error%"),
         send__success("&a成功向 %players_count% 位玩家发送模板邮件 %template% %parameters%"),
 
+        extensive__not_set("你还没有设置泛收件人"),
+        extensive__calculating("正在计算泛收件人列表，请稍等…"),
+        extensive__empty("&a泛收件人表达式&e %formula% &e共计算出&c 0 &e名玩家"),
+        extensive__chat_header("&a泛收件人表达式&e %formula% &e共计算出&e %players_count% &e名玩家，前&e %count% &a位名单如下:"),
+        extensive__chat_entry("&7-&f %player_name%"),
+
         players__empty("&a接收者表达式&e %formula% &e共计算出&c 0 &e名玩家"),
         players__chat_header("&a接收者表达式&e %formula% &e共计算出&e %players_count% &e名玩家，前&e %count% &a位名单如下:"),
         players__chat_entry("&7-&f <hover:show_text:%player_uuid%>%player_name%</hover>"),
         players__book_header("共 %players_count% 名玩家"),
         players__book_entry("- <hover:show_text:%player_uuid%>%player_name%</hover>"),
+
         ;
 
         Command(String defaultValue) {

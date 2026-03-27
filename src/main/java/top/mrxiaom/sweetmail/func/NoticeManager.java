@@ -24,6 +24,7 @@ public class NoticeManager extends AbstractPluginHolder implements Listener {
     boolean noticeBungee;
     String noticeSenderKey;
     String noticeReceiverKey;
+    boolean noticeCheckOnJoin;
     public NoticeManager(SweetMail plugin) {
         super(plugin);
         registerEvents(this);
@@ -36,16 +37,25 @@ public class NoticeManager extends AbstractPluginHolder implements Listener {
         noticeBungee = config.getBoolean("bungeecord.enable", true);
         noticeSenderKey = config.getString("bungeecord.sender-key", "");
         noticeReceiverKey = config.getString("bungeecord.receiver-key", "");
+
+        noticeCheckOnJoin = config.getBoolean("notice.check-on-join", true);
     }
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent e) {
         Player player = e.getPlayer();
-        if (!player.hasPermission("sweetmail.notice")) return;
-        MailCountInfo mailCountInfo = plugin.getMailDatabase().getInBoxCount(player, true);
-        if (mailCountInfo.unreadCount > 0) {
-            notice(player, Messages.Join.text.str(), mailCountInfo.unreadCount);
+        if (noticeCheckOnJoin && player.hasPermission("sweetmail.notice")) {
+            checkUnreadAsync(player);
         }
+    }
+
+    public void checkUnreadAsync(Player player) {
+        plugin.getScheduler().runTaskAsync(() -> {
+            MailCountInfo mailCountInfo = plugin.getMailDatabase().getInBoxCount(player, true);
+            if (mailCountInfo.unreadCount > 0) {
+                notice(player, Messages.Join.text.str(), mailCountInfo.unreadCount);
+            }
+        });
     }
 
     @Override
@@ -54,12 +64,16 @@ public class NoticeManager extends AbstractPluginHolder implements Listener {
             String key = in.readUTF();
             if (!key.contains(noticeReceiverKey)) return;
             int length = in.readInt();
+            List<Player> noticePlayers = new ArrayList<>();
             for (int i = 0; i < length; i++) {
-                Player player = Util.getOnlinePlayerByNameOrUUID(in.readUTF()).orElse(null);
-                if (player == null) continue;
-                plugin.getMailDatabase().getInBoxCount(player, true);
-                notice(player, Messages.Join.text_online.str(), 1);
+                Util.getOnlinePlayerByNameOrUUID(in.readUTF()).ifPresent(noticePlayers::add);
             }
+            plugin.getScheduler().runTaskAsync(() -> {
+                for (Player player : noticePlayers) {
+                    plugin.getMailDatabase().getInBoxCount(player, true);
+                    notice(player, Messages.Join.text_online.str(), 1);
+                }
+            });
         }
     }
 
@@ -82,7 +96,7 @@ public class NoticeManager extends AbstractPluginHolder implements Listener {
         if (!noticeBungee || players.isEmpty()) return;
         Player player = Util.getAnyPlayerOrNull();
         if (player == null) return;
-        plugin.getScheduler().runAsync((t_) -> {
+        plugin.getScheduler().runTaskAsync(() -> {
             ByteArrayDataOutput out = Util.newDataOutput();
             out.writeUTF("Forward");
             out.writeUTF("ALL");

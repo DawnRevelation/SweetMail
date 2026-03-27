@@ -12,6 +12,7 @@ import top.mrxiaom.sweetmail.func.DraftManager;
 import top.mrxiaom.sweetmail.func.data.Draft;
 import top.mrxiaom.sweetmail.utils.ChatPrompter;
 import top.mrxiaom.sweetmail.utils.ItemStackUtil;
+import top.mrxiaom.sweetmail.utils.Util;
 
 import java.util.List;
 
@@ -42,9 +43,9 @@ public class AttachmentCommand implements IAttachment {
 
     @Override
     public void use(Player player) {
-        SweetMail.getInstance().getScheduler().runNextTick((t_) -> {
+        SweetMail.getInstance().getScheduler().runTask(() -> {
             String cmd = PAPI.setPlaceholders(player, command);
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), miniMessageToLegacy(cmd));
+            Util.dispatchCommand(Bukkit.getConsoleSender(), miniMessageToLegacy(cmd));
         });
     }
 

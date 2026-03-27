@@ -12,6 +12,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import top.mrxiaom.sweetmail.Messages;
 import top.mrxiaom.sweetmail.SweetMail;
 import top.mrxiaom.sweetmail.config.AbstractMenuConfig;
@@ -172,8 +173,10 @@ public class MenuOutBoxConfig extends AbstractMenuConfig<MenuOutBoxConfig.Gui> {
         private final Player player;
         @NotNull
         private final String target;
-        int page = 1;
-        ListX<MailWithStatus> outBox;
+        private int page = 1;
+        ListX<MailWithStatus> outBox = new ListX<>(0);
+        private Inventory created;
+        private boolean loading = false;
         public Gui(SweetMail plugin, Player player, @NotNull String target) {
             super(plugin);
             this.player = player;
@@ -195,31 +198,66 @@ public class MenuOutBoxConfig extends AbstractMenuConfig<MenuOutBoxConfig.Gui> {
         }
 
         @Override
+        public void open() {
+            loading = true;
+            // 异步调用数据库，完成后再打开菜单
+            refreshOutboxAsync(() -> plugin.getGuiManager().openGui(this));
+        }
+
+        public void refreshOutboxAsync() {
+            refreshOutboxAsync(null);
+        }
+        public void refreshOutboxAsync(@Nullable Runnable post) {
+            loading = true;
+            plugin.getScheduler().runTaskAsync(() -> {
+                String targetKey;
+                if (target.equalsIgnoreCase("#Server#")) {
+                    targetKey = "#Server#";
+                } else if (plugin.isOnlineMode()) {
+                    OfflinePlayer offline = Util.getOfflinePlayer(target).orElse(null);
+                    targetKey = plugin.getPlayerKey(offline);
+                } else {
+                    targetKey = target;
+                }
+                outBox = targetKey != null
+                        ? plugin.getMailDatabase().getOutBox(targetKey, page, getSlotsCount())
+                        : new ListX<>(-1);
+                plugin.getScheduler().runTask(() -> {
+                    if (created != null) {
+                        created.clear();
+                        applyIcons(this, created, player);
+                        Util.updateInventory(player);
+                    }
+                    loading = false;
+                    if (post != null) {
+                        post.run();
+                    }
+                });
+            });
+        }
+
+        @Override
         public Inventory newInventory() {
-            String targetKey;
-            if (target.equalsIgnoreCase("#Server#")) {
-                targetKey = "#Server#";
-            } else if (plugin.isOnlineMode()) {
-                OfflinePlayer offline = Util.getOfflinePlayer(target).orElse(null);
-                targetKey = plugin.getPlayerKey(offline);
-            } else {
-                targetKey = target;
-            }
-            outBox = targetKey != null
-                    ? plugin.getMailDatabase().getOutBox(targetKey, page, getSlotsCount())
-                    : new ListX<>(-1);
-            Inventory inv = createInventory(this, player);
-            applyIcons(this, inv, player);
-            return inv;
+            created = createInventory(this, player);
+            applyIcons(this, created, player);
+            return created;
+        }
+
+        @NotNull
+        @Override
+        public Inventory getInventory() {
+            return created;
         }
 
         @Override
         public void onClick(InventoryAction action, ClickType click, InventoryType.SlotType slotType, int slot, ItemStack currentItem, ItemStack cursor, InventoryView view, InventoryClickEvent event) {
             event.setCancelled(true);
+            if (loading) return;
             Character c = getSlotKey(slot);
             if (c != null) switch (String.valueOf(c)) {
                 case "全": {
                     if (!click.isShiftClick() && click.isLeftClick()) {
+                        loading = true;
                         MenuInBoxConfig.inst()
                                 .new Gui(plugin, player, target, false)
                                 .open();
@@ -228,6 +266,7 @@ public class MenuOutBoxConfig extends AbstractMenuConfig<MenuOutBoxConfig.Gui> {
                 }
                 case "读": {
                     if (!click.isShiftClick() && click.isLeftClick()) {
+                        loading = true;
                         MenuInBoxConfig.inst()
                                 .new Gui(plugin, player, target, true)
                                 .open();
@@ -235,13 +274,15 @@ public class MenuOutBoxConfig extends AbstractMenuConfig<MenuOutBoxConfig.Gui> {
                     return;
                 }
                 case "发": {
+                    // 玩家不可能在发件箱界面打开时发送邮件，所以，在发件箱界面点击发件箱图标。不需要执行刷新操作
                     return;
                 }
                 case "上": {
                     if (!click.isShiftClick() && click.isLeftClick()) {
                         if (page <= 1) return;
+                        loading = true;
                         page--;
-                        plugin.getGuiManager().openGui(this);
+                        open();
                     }
                     return;
                 }
@@ -249,8 +290,9 @@ public class MenuOutBoxConfig extends AbstractMenuConfig<MenuOutBoxConfig.Gui> {
                     if (!click.isShiftClick() && click.isLeftClick()) {
                         int maxPage = outBox.getMaxPage(getSlotsCount());
                         if (maxPage > 0 && page >= maxPage) return;
+                        loading = true;
                         page++;
-                        plugin.getGuiManager().openGui(this);
+                        open();
                     }
                     return;
                 }
@@ -264,20 +306,24 @@ public class MenuOutBoxConfig extends AbstractMenuConfig<MenuOutBoxConfig.Gui> {
                             return;
                         }
                         if (click.isRightClick()) {
+                            loading = true;
                             MenuViewAttachmentsConfig.inst()
                                     .new Gui(this, player, mail)
                                     .open();
                             return;
                         }
                         if (click.equals(ClickType.DROP) && player.hasPermission("sweetmail.admin")) {
+                            loading = true;
                             player.closeInventory();
-                            plugin.getMailDatabase().deleteMail(mail.uuid);
-                            String sender = mail.senderDisplay.trim().isEmpty()
-                                    ? Util.getPlayerName(mail.sender) : mail.senderDisplay;
-                            t(player, plugin.prefix() + Messages.OutBox.deleted.str()
-                                    .replace("%player%", sender)
-                                    .replace("%title%", mail.title)
-                                    .replace("%uuid%", mail.uuid));
+                            plugin.getScheduler().runTaskAsync(() -> {
+                                plugin.getMailDatabase().deleteMail(mail.uuid);
+                                String sender = mail.senderDisplay.trim().isEmpty()
+                                        ? Util.getPlayerName(mail.sender) : mail.senderDisplay;
+                                t(player, plugin.prefix() + Messages.OutBox.deleted.str()
+                                        .replace("%player%", sender)
+                                        .replace("%title%", mail.title)
+                                        .replace("%uuid%", mail.uuid));
+                            });
                             return;
                         }
                     }

@@ -2,13 +2,12 @@ package top.mrxiaom.sweetmail;
 
 import com.google.common.io.ByteArrayDataInput;
 import com.google.common.io.ByteStreams;
-import com.tcoded.folialib.FoliaLib;
-import com.tcoded.folialib.impl.PlatformScheduler;
 import de.tr7zw.changeme.nbtapi.utils.MinecraftVersion;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -19,6 +18,7 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import top.mrxiaom.pluginbase.resolver.DefaultLibraryResolver;
 import top.mrxiaom.pluginbase.resolver.utils.ClassLoaderWrapper;
 import top.mrxiaom.sweetmail.actions.*;
@@ -30,7 +30,7 @@ import top.mrxiaom.sweetmail.book.DefaultBook;
 import top.mrxiaom.sweetmail.book.IBook;
 import top.mrxiaom.sweetmail.database.MailDatabase;
 import top.mrxiaom.sweetmail.database.entry.Mail;
-import top.mrxiaom.sweetmail.depend.Placeholder;
+import top.mrxiaom.sweetmail.depend.PlaceholderRegistry;
 import top.mrxiaom.sweetmail.depend.protocollib.PLComponentTitle;
 import top.mrxiaom.sweetmail.economy.IEconomy;
 import top.mrxiaom.sweetmail.economy.NoEconomy;
@@ -42,18 +42,24 @@ import top.mrxiaom.sweetmail.func.TimerManager;
 import top.mrxiaom.sweetmail.func.basic.GuiManager;
 import top.mrxiaom.sweetmail.func.basic.TextHelper;
 import top.mrxiaom.sweetmail.func.data.Draft;
-import top.mrxiaom.sweetmail.utils.EconomyHolder;
-import top.mrxiaom.sweetmail.utils.ItemStackUtil;
-import top.mrxiaom.sweetmail.utils.StringHelper;
-import top.mrxiaom.sweetmail.utils.Util;
+import top.mrxiaom.sweetmail.players.AbstractPlayerListProvider;
+import top.mrxiaom.sweetmail.players.IPlayerList;
+import top.mrxiaom.sweetmail.players.providers.*;
+import top.mrxiaom.sweetmail.utils.*;
 import top.mrxiaom.sweetmail.utils.inventory.BukkitInventoryFactory;
 import top.mrxiaom.sweetmail.utils.inventory.InventoryFactory;
 import top.mrxiaom.sweetmail.utils.inventory.PaperInventoryFactory;
+import top.mrxiaom.sweetmail.utils.scheduler.FoliaLibScheduler;
+import top.mrxiaom.sweetmail.utils.scheduler.IScheduler;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -85,12 +91,18 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
     private final ClassLoaderWrapper classLoader;
     private IBook bookImpl;
     private InventoryFactory inventoryFactory;
-    public final FoliaLib foliaLib;
+    private FileConfiguration config;
+    private final IScheduler scheduler;
+    private final List<AbstractPlayerListProvider> playerListProviders = new ArrayList<>();
     public SweetMail() throws Exception {
-        this.classLoader = new ClassLoaderWrapper((URLClassLoader) getClassLoader());
-        this.foliaLib = new FoliaLib(this);
-
-        loadLibraries();
+        this.classLoader = ClassLoaderWrapper.resolve((URLClassLoader) getClassLoader());
+        this.scheduler = new FoliaLibScheduler(this);
+        try {
+            //noinspection ResultOfMethodCallIgnored
+            getDescription().getLibraries();
+        } catch (LinkageError e) {
+            loadLibraries();
+        }
     }
 
     public IBook getBookImpl() {
@@ -105,21 +117,98 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
         this.bookImpl = bookImpl;
     }
 
-    public PlatformScheduler getScheduler() {
-        return foliaLib.getScheduler();
+    public IScheduler getScheduler() {
+        return scheduler;
+    }
+
+    public void registerPlayerList(AbstractPlayerListProvider provider) {
+        playerListProviders.add(provider);
+        playerListProviders.sort(Comparator.comparingInt(AbstractPlayerListProvider::priority));
+    }
+
+    public void unregisterPlayerList(AbstractPlayerListProvider provider) {
+        playerListProviders.remove(provider);
+        playerListProviders.sort(Comparator.comparingInt(AbstractPlayerListProvider::priority));
+    }
+
+    @Nullable
+    public IPlayerList parsePlayerList(@Nullable String str) {
+        if (str == null) {
+            return null;
+        }
+        for (AbstractPlayerListProvider provider : playerListProviders) {
+            IPlayerList inst = provider.fromString(str);
+            if (inst != null) {
+                return inst;
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    public IPlayerList parsePlayerList(@Nullable ConfigurationSection config) {
+        if (config == null) {
+            return null;
+        }
+        for (AbstractPlayerListProvider provider : playerListProviders) {
+            IPlayerList inst = provider.fromConfig(config);
+            if (inst != null) {
+                return inst;
+            }
+        }
+        return null;
+    }
+
+    private void registerBuiltInPlayerList() {
+        registerPlayerList(new ProviderBungeeOnline());
+        registerPlayerList(new ProviderCurrentOnline());
+        registerPlayerList(new ProviderExpression());
+        registerPlayerList(new ProviderInTime());
+        registerPlayerList(new ProviderRaw());
     }
 
     private void loadLibraries() throws Exception {
         Logger logger = this.getLogger();
         logger.info("正在检查依赖库状态");
-        File librariesDir = new File(this.getDataFolder(), "libraries");
+        File librariesDir = ClassLoaderWrapper.isSupportLibraryLoader
+                ? new File("libraries") // 防止出现依赖版本不同的问题
+                : new File(this.getDataFolder(), "libraries");
         DefaultLibraryResolver resolver = new DefaultLibraryResolver(logger, librariesDir);
 
-        resolver.addLibrary(BuildConstants.LIBRARIES);
+        File overrideFile = new File(getDataFolder(), ".override-libraries.yml");
+        YamlConfiguration overrideLibraries = YamlConfiguration.loadConfiguration(overrideFile);
+        for (String key : overrideLibraries.getKeys(false)) {
+            resolver.getStartsReplacer().put(key, overrideLibraries.getString(key));
+        }
+        resolver.addResolvedLibrary(BuildConstants.RESOLVED_LIBRARIES);
         File databaseConfig = new File(this.getDataFolder(), "database.yml");
         if (databaseConfig.exists()) {
-            YamlConfiguration config = YamlConfiguration.loadConfiguration(databaseConfig);
-            resolver.addLibraries(config.getStringList("extra-libraries"));
+            YamlConfiguration config = Config.load(databaseConfig);
+            for (String dependency : config.getStringList("extra-libraries")) {
+                // 仅进行最低程度兼容，不处理子依赖
+                String[] split;
+                String extension;
+                if (dependency.contains("@")) {
+                    int i = dependency.lastIndexOf('@');
+                    split = dependency.substring(0, i).split(":");
+                    extension = dependency.substring(i + 1);
+                } else {
+                    split = dependency.split(":");
+                    extension = "jar";
+                }
+                if (split.length < 3) continue;
+                StringBuilder sb = new StringBuilder();
+                String group = split[0].replace('.', '/');
+                String name = split[1];
+                String version = split[2];
+                sb.append(group).append('/').append(name).append('/').append(version).append('/');
+                sb.append(name).append('-').append(version);
+                if (split.length > 3) {
+                    sb.append('-').append(split[3]);
+                }
+                sb.append('.').append(extension);
+                resolver.addResolvedLibrary(sb.toString());
+            }
         }
 
         List<URL> libraries = resolver.doResolve();
@@ -184,6 +273,7 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
         } catch (Throwable ignored) {
             inventoryFactory = new BukkitInventoryFactory();
         }
+        registerBuiltInPlayerList();
     }
 
     @Override
@@ -255,7 +345,7 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
             }
         }
         if (Util.isPresent("me.clip.placeholderapi.expansion.PlaceholderExpansion")) {
-            new Placeholder(this).register();
+            PlaceholderRegistry.register(this);
         }
         if (Util.isPresent("com.comphenix.protocol.ProtocolLibrary")) {
             new PLComponentTitle(this);
@@ -286,7 +376,7 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
             if (plugin instanceof JavaPlugin) {
                 File plugins = getDataFolder().getParentFile();
                 File alias = new File(plugins, "CMI/Settings/Alias.yml");
-                YamlConfiguration config = YamlConfiguration.loadConfiguration(alias);
+                YamlConfiguration config = Config.load(alias);
                 if (config.getBoolean("Alias./mail.Enabled", false)) {
                     warn("============================================================");
                     warn("SweetMail 与 CMI 存在兼容性问题，本插件的 /mail 命令被 CMI 覆盖。");
@@ -317,7 +407,7 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
         this.getServer().getMessenger().unregisterOutgoingPluginChannel(this);
         this.getServer().getMessenger().unregisterIncomingPluginChannel(this);
         HandlerList.unregisterAll((Plugin) this);
-        getScheduler().cancelAllTasks();
+        getScheduler().cancelTasks();
         Util.onDisable();
     }
 
@@ -336,11 +426,21 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
             AbstractPluginHolder.receiveFromBungee(subChannel, bytes);
         }
     }
+    @Override
+    public @NotNull FileConfiguration getConfig() {
+        if (config == null) {
+            this.reloadConfig();
+        }
+        return config;
+    }
 
     @Override
     public void reloadConfig() {
-        this.saveDefaultConfig();
-        super.reloadConfig();
+        File file = new File(getDataFolder(), "config.yml");
+        if (!file.exists()) {
+            saveResource("config.yml", file);
+        }
+        this.config = Config.load(file);
 
         FileConfiguration config = getConfig();
         String online = config.getString("online-mode", "auto").toLowerCase();
@@ -363,12 +463,45 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
         reloadAllConfig(config);
     }
 
+    public void saveResource(String path) {
+        saveResource(path, new File(getDataFolder(), path));
+    }
+
+    public void saveResource(String path, File file) {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) {
+            Util.mkdirs(parent);
+        }
+        try (InputStream resource = getResource(path)) {
+            if (resource == null) return;
+            try (FileOutputStream output = new FileOutputStream(file)) {
+                int len;
+                byte[] buffer = new byte[1024];
+                while ((len = resource.read(buffer)) != -1) {
+                    output.write(buffer, 0, len);
+                }
+            }
+        } catch (IOException e) {
+            warn("保存资源文件 " + path + " 时出错", e);
+        }
+    }
+
     private class MailAPI extends IMail {
         private MailAPI() {
         }
         @Override
         protected Status send(MailDraft draft) {
-            List<String> receivers = draft.getReceivers();
+            IPlayerList extensiveReceivers = draft.getExtensiveReceivers();
+            List<String> receivers;
+            if (extensiveReceivers != null) {
+                receivers = new ArrayList<>();
+                List<OfflinePlayer> players = extensiveReceivers.getPlayers();
+                for (OfflinePlayer player : players) {
+                    receivers.add(getPlayerKey(player));
+                }
+            } else {
+                receivers = draft.getReceivers();
+            }
             if (receivers.isEmpty()) {
                 return Status.EMPTY_RECEIVER;
             }
@@ -408,11 +541,9 @@ public class SweetMail extends JavaPlugin implements Listener, TabCompleter, Plu
                 }
             }
             if (draft.getReceivers().isEmpty()) return null;
-            if (draft.getReceivers().size() > 1) {
-                if (!draft.getReceivers().get(0).equals("#advance#")) {
-                    throw new IllegalArgumentException("定时发送不支持多个 receivers 的用法，请将第一个元素设为 #advance#，第二个元素设为泛接收者表达式");
-                }
-                generated.advReceivers = draft.getReceivers().get(1);
+            IPlayerList extensiveReceivers = draft.getExtensiveReceivers();
+            if (extensiveReceivers != null) {
+                generated.extensiveReceivers = extensiveReceivers;
             } else {
                 generated.receiver = draft.getReceivers().get(0);
             }

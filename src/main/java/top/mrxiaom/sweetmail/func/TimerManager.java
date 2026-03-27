@@ -8,6 +8,7 @@ import top.mrxiaom.sweetmail.SweetMail;
 import top.mrxiaom.sweetmail.database.entry.Mail;
 import top.mrxiaom.sweetmail.func.data.Draft;
 import top.mrxiaom.sweetmail.func.data.TimedDraft;
+import top.mrxiaom.sweetmail.utils.Config;
 
 import java.io.File;
 import java.io.IOException;
@@ -26,13 +27,13 @@ public class TimerManager extends AbstractPluginHolder {
     public TimerManager(SweetMail plugin) {
         super(plugin);
         file = new File(plugin.getDataFolder(), "timed_draft.yml");
-        plugin.getScheduler().runTimer(this::everySecond, 20L, 20L);
+        plugin.getScheduler().runTaskTimer(this::everySecond, 20L, 20L);
         register();
     }
 
     @Override
     public void reloadConfig(MemoryConfiguration cfg) {
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(file);
+        YamlConfiguration config = Config.load(file);
         ConfigurationSection queueSection = config.getConfigurationSection("queue");
         if (queueSection != null) for (String id : queueSection.getKeys(false)) {
             TimedDraft temp = TimedDraft.loadFromConfig(queueSection, id);
@@ -79,7 +80,7 @@ public class TimerManager extends AbstractPluginHolder {
             temp.saveToConfig(queueSection);
         }
         try {
-            config.save(file);
+            Config.save(config, file);
         } catch (IOException e) {
             warn(e);
         }
@@ -87,7 +88,7 @@ public class TimerManager extends AbstractPluginHolder {
 
     private void everySecond() {
         if (queue.isEmpty()) return;
-        plugin.getScheduler().runAsync((t_) -> {
+        plugin.getScheduler().runTaskAsync(() -> {
             boolean flag = false;
             long time = toTimestamp(LocalDateTime.now());
             DraftManager manager = DraftManager.inst();

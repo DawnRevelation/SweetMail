@@ -13,6 +13,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import top.mrxiaom.sweetmail.Messages;
 import top.mrxiaom.sweetmail.SweetMail;
 import top.mrxiaom.sweetmail.attachments.IAttachment;
@@ -184,8 +185,10 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
         private final String target;
         private boolean unread;
         private Inventory created;
-        int page = 1;
+        private int page = 1;
         ListX<MailWithStatus> inBox;
+        private boolean refreshPlaceholdersCacheAfterClose = false;
+        private boolean loading = false;
         public Gui(SweetMail plugin, Player player, @NotNull String target, boolean unread) {
             super(plugin);
             this.player = player;
@@ -202,13 +205,7 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
             return inBox;
         }
 
-        @Override
-        public Player getPlayer() {
-            return player;
-        }
-
-        @Override
-        public Inventory newInventory() {
+        public void refreshInbox() {
             String targetKey;
             if (plugin.isOnlineMode()) {
                 OfflinePlayer offline = Util.getOfflinePlayer(target).orElse(null);
@@ -219,21 +216,84 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
             inBox = targetKey != null
                     ? plugin.getMailDatabase().getInBox(unread, targetKey, page, getSlotsCount())
                     : new ListX<>(-1);
+        }
+
+        public void refreshInboxAndInv() {
+            refreshInbox();
+            applyIcons(this, created, player);
+            Util.updateInventory(player);
+        }
+
+        @Override
+        public void open() {
+            loading = true;
+            // 异步调用数据库，完成后再打开菜单
+            refreshInboxAsync(() -> plugin.getGuiManager().openGui(this));
+        }
+
+        public void refreshInboxAsync() {
+            refreshInboxAsync(null);
+        }
+        public void refreshInboxAsync(@Nullable Runnable post) {
+            loading = true;
+            plugin.getScheduler().runTaskAsync(() -> refreshInboxImpl(post));
+        }
+
+        private void refreshInboxImpl(@Nullable Runnable post) {
+            loading = true;
+            String targetKey;
+            if (plugin.isOnlineMode()) {
+                OfflinePlayer offline = Util.getOfflinePlayer(target).orElse(null);
+                targetKey = plugin.getPlayerKey(offline);
+            } else {
+                targetKey = target;
+            }
+            inBox = targetKey != null
+                    ? plugin.getMailDatabase().getInBox(unread, targetKey, page, getSlotsCount())
+                    : new ListX<>(-1);
+            plugin.getScheduler().runTask(() -> {
+                if (created != null) {
+                    created.clear();
+                    applyIcons(this, created, player);
+                    Util.updateInventory(player);
+                }
+                loading = false;
+                if (post != null) {
+                    post.run();
+                }
+            });
+        }
+
+        @Override
+        public Player getPlayer() {
+            return player;
+        }
+
+        @Override
+        public Inventory newInventory() {
             created = createInventory(this, player);
             applyIcons(this, created, player);
+            return created;
+        }
+
+        @NotNull
+        @Override
+        public Inventory getInventory() {
             return created;
         }
 
         @Override
         public void onClick(InventoryAction action, ClickType click, InventoryType.SlotType slotType, int slot, ItemStack currentItem, ItemStack cursor, InventoryView view, InventoryClickEvent event) {
             event.setCancelled(true);
+            if (loading) return;
             Character c = getSlotKey(slot);
             if (c != null) switch (String.valueOf(c)) {
                 case "全": {
                     if (!click.isShiftClick() && click.isLeftClick()) {
                         if (!unread) return;
                         unread = false;
-                        plugin.getGuiManager().openGui(this);
+                        loading = true;
+                        open();
                     }
                     return;
                 }
@@ -242,10 +302,12 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                         if (click.isLeftClick()) {
                             if (unread) return;
                             unread = true;
-                            plugin.getGuiManager().openGui(this);
+                            loading = true;
+                            open();
                             return;
                         }
                         if (click.isRightClick()) {
+                            loading = true;
                             String targetKey;
                             if (plugin.isOnlineMode()) {
                                 OfflinePlayer offline = Util.getOfflinePlayer(target).orElse(null);
@@ -255,6 +317,7 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                             }
                             plugin.getMailDatabase().markAllRead(targetKey);
                             t(player, plugin.prefix() + Messages.InBox.read_all.str());
+                            open();
                             return;
                         }
                     }
@@ -262,6 +325,7 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                 }
                 case "发": {
                     if (!click.isShiftClick() && click.isLeftClick()) {
+                        loading = true;
                         MenuOutBoxConfig.inst()
                                 .new Gui(plugin, player, target)
                                 .open();
@@ -271,8 +335,9 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                 case "上": {
                     if (!click.isShiftClick() && click.isLeftClick()) {
                         if (page <= 1) return;
+                        loading = true;
                         page--;
-                        plugin.getGuiManager().openGui(this);
+                        open();
                     }
                     return;
                 }
@@ -280,8 +345,9 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                     if (!click.isShiftClick() && click.isLeftClick()) {
                         int maxPage = inBox.getMaxPage(getSlotsCount());
                         if (maxPage > 0 && page >= maxPage) return;
+                        loading = true;
                         page++;
-                        plugin.getGuiManager().openGui(this);
+                        open();
                     }
                     return;
                 }
@@ -289,28 +355,35 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                     if (!click.isShiftClick() && click.isLeftClick()) {
                         if (!player.getName().equals(target)) return; // 不可代领
                         if (inBox.isEmpty() || inBox.get(0).used) return;
-                        String targetKey;
-                        if (plugin.isOnlineMode()) {
-                            OfflinePlayer offline = Util.getOfflinePlayer(target).orElse(null);
-                            targetKey = plugin.getPlayerKey(offline);
-                        } else {
-                            targetKey = target;
-                        }
-                        List<MailWithStatus> unused = plugin.getMailDatabase().getInBoxUnused(targetKey);
-                        if (unused.isEmpty()) return;
-                        List<String> dismiss = new ArrayList<>();
-                        for (MailWithStatus mail : unused) {
-                            if (mail.used) continue;
-                            mail.used = true;
-                            dismiss.add(mail.uuid);
-                            if (mail.isOutdated()) {
-                                t(player, plugin.prefix() + Messages.InBox.attachments_outdated.str());
-                                continue;
+                        loading = true;
+                        plugin.getScheduler().runTaskAsync(() -> {
+                            // 需要等待“读取所有未使用附件的邮件”、“附件已使用”标记完成，再刷新菜单，故将这些逻辑都放在一个 runAsync 内
+                            String targetKey;
+                            if (plugin.isOnlineMode()) {
+                                OfflinePlayer offline = Util.getOfflinePlayer(target).orElse(null);
+                                targetKey = plugin.getPlayerKey(offline);
+                            } else {
+                                targetKey = target;
                             }
-                            plugin.getScheduler().runNextTick((t_) -> useAttachments(mail));
-                        }
-                        plugin.getMailDatabase().markUsed(dismiss, targetKey);
-                        open();
+                            List<MailWithStatus> unused = plugin.getMailDatabase().getInBoxUnused(targetKey);
+                            if (unused.isEmpty()) {
+                                loading = false;
+                                return;
+                            }
+                            List<String> dismiss = new ArrayList<>();
+                            for (MailWithStatus mail : unused) {
+                                if (mail.used) continue;
+                                mail.used = true;
+                                dismiss.add(mail.uuid);
+                                if (mail.isOutdated()) {
+                                    t(player, plugin.prefix() + Messages.InBox.attachments_outdated.str());
+                                    continue;
+                                }
+                                plugin.getScheduler().runTask(() -> useAttachments(mail));
+                            }
+                            plugin.getMailDatabase().markUsed(dismiss, targetKey);
+                            refreshInboxAsync();
+                        });
                     }
                     return;
                 }
@@ -325,42 +398,64 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                     } else {
                         targetKey = target;
                     }
-                    plugin.getMailDatabase().markRead(mail.uuid, targetKey);
                     if (click.isLeftClick()) {
+                        loading = true;
+                        if (!mail.read) { // 只要是左键，无论何种方式，都标为已读
+                            mail.read = true;
+                            refreshPlaceholdersCacheAfterClose = true;
+                            // 不需要等待标记已读完成，直接异步调用即可
+                            plugin.getScheduler().runTaskAsync(() -> plugin.getMailDatabase().markRead(mail.uuid, targetKey));
+                        }
                         if (click.isShiftClick() && !mail.attachments.isEmpty() && !mail.used) {
                             // Shift+左键 领取附件
                             mail.used = true;
-                            plugin.getMailDatabase().markUsed(Lists.newArrayList(mail.uuid), targetKey);
-                            if (mail.isOutdated()) {
-                                t(player, plugin.prefix() + Messages.InBox.attachments_outdated.str());
-                                return;
-                            }
-                            plugin.getScheduler().runNextTick((t_) -> {
-                                useAttachments(mail);
-                                plugin.getMailDatabase().getInBoxUnused(targetKey);
-                                applyIcons(this, created, player);
-                                Util.updateInventory(player);
+                            plugin.getScheduler().runTaskAsync(() -> {
+                                // 需要等待“附件已使用”标记完成，再刷新菜单，故将这些逻辑都放在一个 runAsync 内
+                                refreshPlaceholdersCacheAfterClose = true;
+                                plugin.getMailDatabase().markUsed(Lists.newArrayList(mail.uuid), targetKey);
+                                if (mail.isOutdated()) {
+                                    // 已过期 进行提示
+                                    t(player, plugin.prefix() + Messages.InBox.attachments_outdated.str());
+                                    loading = false;
+                                } else {
+                                    // 未过期 领取附件并刷新菜单
+                                    loading = true;
+                                    plugin.getScheduler().runTask(() -> {
+                                        useAttachments(mail);
+                                        refreshInboxAsync();
+                                    });
+                                }
                             });
                             return;
                         }
                         // 左键 查看正文
                         plugin.getBookImpl().openBook(player, mail);
+                        loading = false;
                         return;
                     }
                     if (click.isRightClick()) {
-                        if (click.isShiftClick()) { // Shift+右键 标记已读并刷新界面图标
-                            plugin.getScheduler().runNextTick((t_) -> {
-                                plugin.getMailDatabase().getInBoxUnused(targetKey);
-                                applyIcons(this, created, player);
-                                Util.updateInventory(player);
+                        loading = true;
+                        if (click.isShiftClick()) {
+                            // Shift+右键 标记已读并刷新界面图标
+                            plugin.getScheduler().runTaskAsync(() -> {
+                                // 需要等待“邮件已读”标记完成，再刷新菜单，故将这些逻辑都放在一个 runAsync 内
+                                if (!mail.read) {
+                                    mail.read = true;
+                                    refreshPlaceholdersCacheAfterClose = true;
+                                    plugin.getMailDatabase().markRead(mail.uuid, targetKey);
+                                }
+                                refreshInboxImpl(null);
                             });
-                            return;
+                        } else {
+                            // 右键 预览附件
+
+                            // 不需要等待标记已读完成，直接异步调用即可
+                            plugin.getScheduler().runTaskAsync(() -> plugin.getMailDatabase().markRead(mail.uuid, targetKey));
+                            // 打开附件浏览菜单
+                            MenuViewAttachmentsConfig.inst()
+                                    .new Gui(this, player, mail)
+                                    .open();
                         }
-                        // 右键 预览附件
-                        MenuViewAttachmentsConfig.inst()
-                                .new Gui(this, player, mail)
-                                .open();
-                        return;
                     }
                     return;
                 }
@@ -368,6 +463,15 @@ public class MenuInBoxConfig extends AbstractMenuConfig<MenuInBoxConfig.Gui> {
                     handleClick(player, click, c);
                     break;
                 }
+            }
+        }
+
+        @Override
+        public void onClose(InventoryView view) {
+            if (refreshPlaceholdersCacheAfterClose) {
+                plugin.getScheduler().runTaskAsync(() -> {
+                    plugin.getMailDatabase().getInBoxCount(player, true);
+                });
             }
         }
 

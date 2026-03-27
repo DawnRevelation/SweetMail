@@ -24,6 +24,7 @@ import top.mrxiaom.sweetmail.config.gui.MenuOutBoxConfig;
 import top.mrxiaom.sweetmail.database.entry.Mail;
 import top.mrxiaom.sweetmail.func.AbstractPluginHolder;
 import top.mrxiaom.sweetmail.func.DraftManager;
+import top.mrxiaom.sweetmail.func.NoticeManager;
 import top.mrxiaom.sweetmail.func.TimerManager;
 import top.mrxiaom.sweetmail.func.data.Draft;
 import top.mrxiaom.sweetmail.func.data.TimedDraft;
@@ -71,7 +72,7 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                 }
             }
             if ("admin".equalsIgnoreCase(args[0]) && admin) {
-                if (args.length >= 4 && "inbox".equalsIgnoreCase(args[1])) {
+                if (args.length > 3 && "inbox".equalsIgnoreCase(args[1])) {
                     if (!(sender instanceof Player)) {
                         return true;
                     }
@@ -87,7 +88,7 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                             .open();
                     return true;
                 }
-                if (args.length >= 3 && "outbox".equalsIgnoreCase(args[1])) {
+                if (args.length > 2 && "outbox".equalsIgnoreCase(args[1])) {
                     if (!(sender instanceof Player)) {
                         return true;
                     }
@@ -99,11 +100,11 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                             .open();
                     return true;
                 }
-                if (args.length >= 3 && "timed".equalsIgnoreCase(args[1])) {
+                if (args.length > 2 && "timed".equalsIgnoreCase(args[1])) {
                     String id = args[2];
                     TimerManager manager = TimerManager.inst();
                     TimedDraft timedDraft = manager.getQueue(id);
-                    if (timedDraft == null) return t(sender, plugin.prefix() + Messages.Command.timed__info__not_found.str());
+                    if (timedDraft == null) return t(sender, plugin.prefix() + Messages.Command.timed__info__not_found.str(Pair.of("%id%", id)));
                     String senderDisplay = timedDraft.draft.advSenderDisplay == null ? "" : timedDraft.draft.advSenderDisplay;
                     String mailSender = senderDisplay.isEmpty() ? timedDraft.draft.sender : IMail.SERVER_SENDER;
                     for (String s : Messages.Command.timed__info__display.list(
@@ -111,22 +112,34 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                             Pair.of("%sender%", mailSender),
                             Pair.of("%senderDisplay%", senderDisplay),
                             Pair.of("%receiver%", timedDraft.draft.receiver),
-                            Pair.of("%advReceivers%", timedDraft.draft.advReceivers))) {
+                            Pair.of("%advReceivers%", timedDraft.draft.extensiveReceivers.toLegacyString()))) {
                         t(sender, plugin.prefix() + s);
                     }
                     return true;
                 }
-                if (args.length >= 3 && "cancel".equalsIgnoreCase(args[1])) {
+                if (args.length > 2 && "cancel".equalsIgnoreCase(args[1])) {
                     String id = args[2];
                     TimerManager manager = TimerManager.inst();
-                    boolean result = manager.cancelQueue(id);
-                    return t(sender, plugin.prefix() + (result ? Messages.Command.timed__cancel__success : Messages.Command.timed__cancel__fail).str());
+                    if (manager.cancelQueue(id)) {
+                        manager.save();
+                        return t(sender, plugin.prefix() + Messages.Command.timed__cancel__success.str(Pair.of("%id%", id)));
+                    } else {
+                        return t(sender, plugin.prefix() + Messages.Command.timed__cancel__fail.str(Pair.of("%id%", id)));
+                    }
+                }
+                if (args.length > 2 && "check".equalsIgnoreCase(args[1])) {
+                    Player player = Util.getOnlinePlayer(args[2]).orElse(null);
+                    if (player == null) {
+                        return t(sender, plugin.prefix() +  Messages.Command.player__not_online.str());
+                    }
+                    NoticeManager.inst().checkUnreadAsync(player);
+                    return true;
                 }
             }
             if ("draft".equalsIgnoreCase(args[0]) && sender.hasPermission(PERM_DRAFT)) {
                 Player player;
-                if (args.length >= 2 && sender.hasPermission(PERM_DRAFT_OTHER)) {
-                    player = Util.getOnlinePlayer(args[2]).orElse(null);
+                if (args.length > 1 && sender.hasPermission(PERM_DRAFT_OTHER)) {
+                    player = Util.getOnlinePlayer(args[1]).orElse(null);
                     if (player == null) {
                         return true;
                     }
@@ -142,12 +155,12 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                 return true;
             }
             if ("inbox".equalsIgnoreCase(args[0]) && sender.hasPermission(PERM_BOX)) {
-                String type = args.length >= 2 ? args[1] : "unread";
+                String type = args.length > 1 ? args[1] : "unread";
                 if (!type.equals("unread") && !type.equals("all")) {
                     return true;
                 }
                 Player player;
-                if (args.length >= 3 && sender.hasPermission(PERM_BOX_OTHER)) {
+                if (args.length > 2 && sender.hasPermission(PERM_BOX_OTHER)) {
                     player = Util.getOnlinePlayer(args[2]).orElse(null);
                     if (player == null) {
                         return true;
@@ -165,7 +178,7 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
             }
             if ("outbox".equalsIgnoreCase(args[0]) && sender.hasPermission(PERM_BOX)) {
                 Player player;
-                if (args.length >= 2 && sender.hasPermission(PERM_BOX_OTHER)) {
+                if (args.length > 1 && sender.hasPermission(PERM_BOX_OTHER)) {
                     player = Util.getOnlinePlayer(args[1]).orElse(null);
                     if (player == null) {
                         return true;
@@ -194,7 +207,7 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                     return t(sender, "&e只有玩家才能执行该命令");
                 }
             }
-            if ("send".equalsIgnoreCase(args[0]) && args.length >= 2 && admin) {
+            if ("send".equalsIgnoreCase(args[0]) && args.length > 2 && admin) {
                 Template template = TemplateConfig.inst().get(args[1]);
                 if (template == null) {
                     return Messages.Command.send__no_template.tm(sender,
@@ -210,26 +223,30 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                             Pair.of("%error%", result.getError()));
                 }
                 Args params = result.getValue();
-                String uuid = plugin.getMailDatabase().generateMailUUID();
-                Result<Mail> mail = template.createMail(uuid, players, params);
-                if (mail.getError() != null) {
-                    return Messages.Command.send__failed.tm(sender,
-                            Pair.of("%error%", mail.getError()));
-                }
-                plugin.getMailDatabase().sendMail(mail.getValue());
-                return Messages.Command.send__success.tm(sender,
-                        Pair.of("%players_count%", players.size()),
-                        Pair.of("%template%", template.id),
-                        Pair.of("%parameters%", params));
+                plugin.getScheduler().runTaskAsync(() -> {
+                    String uuid = plugin.getMailDatabase().generateMailUUID();
+                    Result<Mail> mail = template.createMail(uuid, players, params);
+                    if (mail.getError() != null) {
+                        Messages.Command.send__failed.tm(sender,
+                                Pair.of("%error%", mail.getError()));
+                        return;
+                    }
+                    plugin.getMailDatabase().sendMail(mail.getValue());
+                    Messages.Command.send__success.tm(sender,
+                            Pair.of("%players_count%", players.size()),
+                            Pair.of("%template%", template.id),
+                            Pair.of("%parameters%", params));
+                });
+                return true;
             }
-            if ("players".equalsIgnoreCase(args[0]) && args.length >= 2 && admin) {
+            if ("players".equalsIgnoreCase(args[0]) && args.length > 1 && admin) {
                 List<OfflinePlayer> players = getPlayers(sender, args[1]);
                 if (players.isEmpty()) {
                     return Messages.Command.players__empty.tm(sender,
                             Pair.of("%formula%", args[1]));
                 }
                 int playersCount = players.size();
-                if (sender instanceof Player && args.length >= 3
+                if (sender instanceof Player && args.length > 2
                         && (args[2].equals("--book") || args[2].equals("-b"))
                 ) {
                     // 通过书与笔展示
@@ -291,6 +308,7 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
         return true;
     }
 
+    @SuppressWarnings({"deprecation"})
     public List<OfflinePlayer> getPlayers(CommandSender sender, String str) {
         List<OfflinePlayer> list = new ArrayList<>();
         if (str.startsWith("@")) {
@@ -354,8 +372,9 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                     if (parameters.containsKey("bc")) {
                         List<String> playerNames = DraftManager.inst().getAllPlayers();
                         for (String name : playerNames) {
-                            OfflinePlayer player = Util.getOfflinePlayer(name).orElse(null);
-                            if (player == null || player.getName() == null) continue;
+                            // 玩家存在就获取，不存在就从 mojang 服务端拿 UUID，新建一个
+                            OfflinePlayer player = Util.getOfflinePlayer(name).orElseGet(() -> Bukkit.getOfflinePlayer(name));
+                            if (player.getName() == null) continue;
                             list.add(player);
                         }
                         break;
@@ -368,7 +387,8 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
             }
         } else {
             for (String s : str.split(",")) {
-                Util.getOfflinePlayer(s).ifPresent(list::add);
+                // 玩家存在就获取，不存在就从 mojang 服务端拿 UUID，新建一个
+                list.add(Util.getOfflinePlayer(s).orElseGet(() -> Bukkit.getOfflinePlayer(s)));
             }
         }
         return list;
@@ -433,7 +453,7 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
     private static final List<String> emptyList = Collections.emptyList();
     private static final List<String> listArg0 = Lists.newArrayList("draft", "inbox", "outbox");
     private static final List<String> listAdminArg0 = Lists.newArrayList("draft", "inbox", "outbox", "admin", "save", "send", "players", "reload");
-    private static final List<String> listArg1Admin = Lists.newArrayList("inbox", "outbox");
+    private static final List<String> listArg1Admin = Lists.newArrayList("inbox", "outbox", "timed", "cancel", "check");
     private static final List<String> listArgInBox = Lists.newArrayList("all", "unread");
     private static final List<String> listArgPlayers = Lists.newArrayList("@all", "@all[ts=]", "@all[from=,to=]", "@self", "@me", "@online", "@online[bc]");
     private static final List<String> listVarArgSend = Lists.newArrayList("键=值");
@@ -486,6 +506,9 @@ public class CommandMain extends AbstractPluginHolder implements CommandExecutor
                     if ("timed".equalsIgnoreCase(args[1])
                             || "cancel".equalsIgnoreCase(args[1])) {
                         return startsWith(TimerManager.inst().getQueueIds(), args[2]);
+                    }
+                    if ("check".equalsIgnoreCase(args[1])) {
+                        return null;
                     }
                 }
                 if ("send".equalsIgnoreCase(args[0])) {

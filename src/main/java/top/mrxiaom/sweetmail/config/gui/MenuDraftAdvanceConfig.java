@@ -1,6 +1,5 @@
 package top.mrxiaom.sweetmail.config.gui;
 
-import com.google.common.collect.Lists;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.MemoryConfiguration;
 import org.bukkit.entity.Player;
@@ -12,27 +11,24 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.Nullable;
+import top.mrxiaom.sweetmail.Messages;
 import top.mrxiaom.sweetmail.SweetMail;
 import top.mrxiaom.sweetmail.config.AbstractMenuConfig;
 import top.mrxiaom.sweetmail.func.DraftManager;
 import top.mrxiaom.sweetmail.func.TimerManager;
 import top.mrxiaom.sweetmail.func.data.Draft;
 import top.mrxiaom.sweetmail.gui.AbstractDraftGui;
+import top.mrxiaom.sweetmail.players.IPlayerList;
+import top.mrxiaom.sweetmail.players.builtin.*;
 import top.mrxiaom.sweetmail.utils.ChatPrompter;
 import top.mrxiaom.sweetmail.utils.Pair;
 import top.mrxiaom.sweetmail.utils.Util;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-
-import static top.mrxiaom.sweetmail.commands.CommandMain.parseLocalTimeOrZero;
-import static top.mrxiaom.sweetmail.utils.Util.toTimestamp;
 
 public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceConfig.Gui> {
     Icon iconSenderDisplay;
@@ -47,6 +43,8 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
     String iconReceiversPrompts4Cancel;
     String iconReceiversPrompts5Tips;
     String iconReceiversPrompts5Cancel;
+    String iconReceiversPrompts6Tips;
+    String iconReceiversPrompts6Cancel;
     String iconReceiversUnset;
     String iconReceiversBadTimeFormat;
     Icon iconTimed;
@@ -95,6 +93,8 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                 iconReceiversPrompts4Cancel = section.getString(key + ".prompts.4.cancel", "cancel");
                 iconReceiversPrompts5Tips = section.getString(key + ".prompts.5.tips", "&7[&e&l邮件&7] &b请在聊天栏发送玩家列表，使用逗号分隔 &7(输入&c cancel &7取消设置)");
                 iconReceiversPrompts5Cancel = section.getString(key + ".prompts.5.cancel", "cancel");
+                iconReceiversPrompts6Tips = section.getString(key + ".prompts.6.tips", "&7[&e&l邮件&7] &b请在聊天栏发送变量表达式，如&e %player_level% >= 30 &7(输入&c cancel &7取消设置)");
+                iconReceiversPrompts6Cancel = section.getString(key + ".prompts.6.cancel", "cancel");
                 iconReceiversUnset = section.getString(key + ".unset", "&7未设置");
                 iconReceiversBadTimeFormat = section.getString(key + ".bad-time-format", "&7[&e&l邮件&7] &f你输入的时间格式不正确!");
                 return true;
@@ -137,9 +137,9 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                 return iconSenderDisplay.generateIcon(gui, target, Pair.of("%sender%", senderDisplay));
             }
             case "收": {
-                String receivers = draft.advReceivers == null || draft.advReceivers.isEmpty()
+                String receivers = draft.extensiveReceivers == null
                         ? iconReceiversUnset
-                        : draft.advReceivers;
+                        : draft.extensiveReceivers.toLegacyString();
                 return iconReceivers.generateIcon(gui, target, Pair.of("%receivers%", receivers));
             }
             case "定": {
@@ -208,38 +208,48 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                 case "收": {
                     if (!click.isShiftClick()) {
                         if (click.isRightClick()) {
-                            draft.advReceivers = null;
+                            draft.extensiveReceivers = null;
                             draft.save();
                             applyIcon(this, view, player, slot);
                             Util.updateInventory(player);
                             return;
                         }
                         if (click.equals(ClickType.DROP)) {
-                            t(player, "正在计算泛接收人列表，请稍等…");
-                            plugin.getScheduler().runAsync((t_) -> {
+                            IPlayerList extensiveReceivers = draft.extensiveReceivers;
+                            if (extensiveReceivers == null) {
+                                Messages.Command.extensive__not_set.tm(player);
+                                return;
+                            }
+                            Messages.Command.extensive__calculating.tm(player);
+                            plugin.getScheduler().runTaskAsync(() -> {
                                 List<String> receivers = draft.advReceivers();
-                                if (receivers.isEmpty()) {
-                                    t(player, "(空)");
-                                } else if (receivers.size() < 16) {
-                                    t(player, String.join(", ", receivers));
-                                } else {
-                                    List<String> list = Lists.partition(receivers, 16).get(0);
-                                    t(player, String.join(", ", list) + "... (" + receivers.size() + ")");
+                                int playersCount = receivers.size();
+                                int count = Math.min(16, playersCount);
+                                Messages.Command.extensive__chat_header.tm(player,
+                                        Pair.of("%formula%", extensiveReceivers.toLegacyString()),
+                                        Pair.of("%players_count%", playersCount),
+                                        Pair.of("%count%", count));
+                                for (int i = 0; i < count; i++) {
+                                    String name = receivers.get(i);
+                                    Messages.Command.extensive__chat_entry.tm(player,
+                                            Pair.of("%player_name%", name)
+                                    );
                                 }
                             });
                             player.closeInventory();
                             return;
                         }
+                        // TODO: 将泛收件人设置移到专门的菜单
                         if (click.equals(ClickType.NUMBER_KEY)) {
                             int btn = event.getHotbarButton() + 1;
                             switch (btn) {
                                 case 1: {
-                                    draft.advReceivers = "current online";
+                                    draft.extensiveReceivers = PlayerListCurrentOnline.INSTANCE;
                                     draft.save();
                                     break;
                                 }
                                 case 2: {
-                                    draft.advReceivers = "current online bungeecord";
+                                    draft.extensiveReceivers = PlayerListBungeeOnline.INSTANCE;
                                     draft.save();
                                     break;
                                 }
@@ -250,7 +260,7 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                                         if (timestamp == null) {
                                             t(player, iconReceiversBadTimeFormat);
                                         } else {
-                                            draft.advReceivers = "last played in " + timestamp;
+                                            draft.extensiveReceivers = new PlayerListInTime(timestamp);
                                             draft.save();
                                         }
                                         reopen.run();
@@ -282,7 +292,7 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                                             reopen.run();
                                             return;
                                         }
-                                        draft.advReceivers = "last played from " + timestampStart + " to " + timestampEnd;
+                                        draft.extensiveReceivers = new PlayerListInTime(timestampStart, timestampEnd);
                                         draft.save();
                                         reopen.run();
                                     };
@@ -302,11 +312,12 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                                 case 5: {
                                     player.closeInventory();
                                     Consumer<String> receiver1 = str -> {
+                                        List<String> names = new ArrayList<>();
                                         String[] split = str.split("[，、；;,]");
-                                        for (int i = 0; i < split.length; i++) {
-                                            split[i] = split[i].trim();
+                                        for (String s : split) {
+                                            names.add(s.trim());
                                         }
-                                        draft.advReceivers = "players " + String.join(",", split);
+                                        draft.extensiveReceivers = new PlayerListRaw(names);
                                         draft.save();
                                         reopen.run();
                                     };
@@ -317,6 +328,19 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                                             receiver1, reopen);
                                     return;
                                 }
+                                case 6:
+                                    player.closeInventory();
+                                    Consumer<String> receiver1 = str -> {
+                                        draft.extensiveReceivers = new PlayerListExpression(false, str);
+                                        draft.save();
+                                        reopen.run();
+                                    };
+                                    ChatPrompter.prompt(
+                                            plugin, player,
+                                            iconReceiversPrompts6Tips,
+                                            iconReceiversPrompts6Cancel,
+                                            receiver1, reopen
+                                    );
                                 default:
                                     return;
                             }
@@ -333,18 +357,12 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
                     ChatPrompter.prompt(plugin, player,
                             iconTimedPromptTips, iconTimedPromptCancel,
                             receive -> {
-                                String[] split = receive.split(" ", 2);
-                                LocalDateTime localDateTime;
-                                try {
-                                    LocalDate date = LocalDate.parse(split[0]);
-                                    LocalTime time = split.length > 1 ? LocalTime.parse(split[1]) : LocalTime.of(0, 0, 0);
-                                    localDateTime = date.atTime(time);
-                                } catch (DateTimeParseException ignored) {
+                                Long time = parseTime(receive);
+                                if (time == null) {
                                     t(player, iconTimedPromptWrongFormat);
                                     reopen.run();
                                     return;
                                 }
-                                long time = toTimestamp(localDateTime);
                                 TimerManager.inst().sendInTime(draft, time);
                                 draft.reset();
                                 draft.save();
@@ -397,16 +415,6 @@ public class MenuDraftAdvanceConfig extends AbstractMenuConfig<MenuDraftAdvanceC
 
     @Nullable
     public static Long parseTime(String s) {
-        String[] split = s.split(" ", 2);
-        String[] dateSplit = split[0].split("-", 3);
-        if (dateSplit.length != 3) return null;
-        Integer year = Util.parseInt(dateSplit[0]).orElse(null);
-        Integer month = Util.parseInt(dateSplit[1]).orElse(null);
-        Integer date = Util.parseInt(dateSplit[2]).orElse(null);
-        if (year == null || month == null || date == null) return null;
-        LocalDate localDate = LocalDate.of(year, month, date);
-        LocalTime localTime = parseLocalTimeOrZero(split.length > 1 ? split[1] : null);
-        LocalDateTime time = localDate.atTime(localTime);
-        return toTimestamp(time);
+        return PlayerListInTime.parseTime(s);
     }
 }
