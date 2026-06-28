@@ -1,3 +1,6 @@
+import top.mrxiaom.gradle.LibraryHelper
+import java.util.Locale
+
 plugins {
     java
     `maven-publish`
@@ -6,7 +9,7 @@ plugins {
 }
 buildscript {
     repositories.mavenCentral()
-    dependencies.classpath("top.mrxiaom:LibrariesResolver-Gradle:1.7.13")
+    dependencies.classpath("top.mrxiaom:LibrariesResolver-Gradle:1.7.27")
 }
 
 var isRelease = gradle.startParameter.taskNames.run {
@@ -23,13 +26,15 @@ java {
     withJavadocJar()
 }
 
-group = "top.mrxiaom"
-version = "1.1.8"
+println("Group:   $group")
+println("Version: $version")
 
 allprojects {
     apply(plugin="java")
     repositories {
-        mavenLocal()
+        if (Locale.getDefault().country == "CN") {
+            maven("https://mirrors.huaweicloud.com/repository/maven/")
+        }
         mavenCentral()
         maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
         maven("https://mvn.lumine.io/repository/maven/")
@@ -40,6 +45,7 @@ allprojects {
         maven("https://libraries.minecraft.net/")
         maven("https://r.irepo.space/maven/")
         maven("https://repo.momirealms.net/releases/")
+        maven("https://maven.devs.beer/")
     }
 
     tasks.withType<JavaCompile>().configureEach {
@@ -50,25 +56,23 @@ allprojects {
     }
 }
 
-val shadowLink = configurations.create("shadowLink")
-val base = top.mrxiaom.gradle.LibraryHelper(project)
+val base = LibraryHelper(project)
 
 @Suppress("VulnerableLibrariesLocal")
 dependencies {
     // Minecraft
     compileOnly("org.spigotmc:spigot-api:1.20-R0.1-SNAPSHOT")
+    compileOnly("com.mojang:authlib:2.1.28")
 
     // API
     compileOnly("net.milkbowl.vault:VaultAPI:1.7")
-    compileOnly("com.github.LoneDev6:api-itemsadder:3.6.1")
+    compileOnly("dev.lone:api-itemsadder:4.0.10")
 
     // Dependency Plugins
-    compileOnly("me.clip:placeholderapi:2.11.6")
+    compileOnly("me.clip:placeholderapi:2.12.2")
     compileOnly("com.github.MascusJeoraly:LanguageUtils:1.9")
     compileOnly("com.github.dmulloy2:ProtocolLib:5.3.0")
-    compileOnly("pers.neige.neigeitems:NeigeItems:1.21.96")
-
-    compileOnly("com.mojang:authlib:2.1.28")
+    compileOnly("pers.neige.neigeitems:NeigeItems:1.21.145")
 
     // MythicMobs 4 and 5
     compileOnly("io.lumine:Mythic-Dist:4.13.0")
@@ -76,24 +80,20 @@ dependencies {
     compileOnly("io.lumine:LumineUtils:1.20-SNAPSHOT")
 
     // CraftEngine
-    compileOnly("net.momirealms:craft-engine-core:0.0.67")
-    compileOnly("net.momirealms:craft-engine-bukkit:0.0.67")
+    compileOnly("net.momirealms:craft-engine-core:26.5.3")
+    compileOnly("net.momirealms:craft-engine-bukkit:26.5.3")
 
     compileOnly(files("gradle/wrapper/stub-rt.jar")) // sun.misc.Unsafe
-    compileOnly("org.jetbrains:annotations:24.0.0")
+    compileOnly(base.depend.annotations)
 
     base.library("org.slf4j:slf4j-api:2.0.16")
-    base.library("com.zaxxer:HikariCP:4.0.3")
-    base.library("net.kyori:adventure-api:4.22.0")
-    base.library("net.kyori:adventure-platform-bukkit:4.4.0")
-    base.library("net.kyori:adventure-text-serializer-gson:4.22.0")
-    base.library("net.kyori:adventure-text-serializer-plain:4.22.0")
-    base.library("net.kyori:adventure-text-minimessage:4.22.0")
+    base.library(base.depend.HikariCP)
+    base.library(LibraryHelper.adventure("4.25.0"))
 
     // Shadow Dependency
-    implementation("de.tr7zw:item-nbt-api:2.15.6")
+    implementation(base.depend.nbtapi)
     implementation("com.github.technicallycoded:FoliaLib:0.4.4") { isTransitive = false }
-    implementation("top.mrxiaom:EvalEx-j8:3.4.0")
+    implementation(base.depend.EvalEx)
     implementation(base.resolver.lite)
     implementation(project(":v1_7_R4"))
     implementation(project(":paper"))
@@ -112,8 +112,7 @@ buildConfig {
 
 tasks {
     shadowJar {
-        configurations.add(project.configurations["runtimeClasspath"])
-        configurations.add(shadowLink)
+        configurations.add(project.configurations.runtimeClasspath.get())
         mapOf(
             "de.tr7zw.changeme.nbtapi" to "nbtapi",
             "com.tcoded.folialib" to "folialib",
@@ -124,10 +123,11 @@ tasks {
         }
     }
     this.register("release")
-    val copyTask = this.register<Copy>("copyBuildArtifact") {
+    val jarName = "${project.name}-$version-plugin.jar"
+    val copyTask = register<Copy>("copyBuildArtifact") {
         dependsOn(shadowJar)
         from(shadowJar.get().outputs)
-        rename { "${project.name}-$version-plugin.jar" }
+        rename { jarName }
         into(rootProject.file("out"))
     }
     build {
@@ -139,7 +139,7 @@ tasks {
         from(sourceSets.main.get().resources.srcDirs) {
             expand(
                 "version" to if (isRelease) version else ("$version-unstable"),
-                "libraries" to base.addedLibraries.joinToString("\"\n  - \""),
+                "libraries" to base.addedLibrariesYAML.joinToString("\n"),
             )
             include("plugin.yml")
         }

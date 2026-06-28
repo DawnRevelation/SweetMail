@@ -11,9 +11,7 @@ import de.tr7zw.changeme.nbtapi.utils.MinecraftVersion;
 import de.tr7zw.changeme.nbtapi.utils.nmsmappings.ReflectionMethod;
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.inventory.Book;
-import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.title.Title;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -21,18 +19,21 @@ import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BookMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import top.mrxiaom.sweetmail.Messages;
 import top.mrxiaom.sweetmail.SweetMail;
+import top.mrxiaom.sweetmail.api.IAdventureHandler;
 import top.mrxiaom.sweetmail.depend.ItemsAdder;
 import top.mrxiaom.sweetmail.depend.Mythic;
 import top.mrxiaom.sweetmail.depend.PAPI;
+import top.mrxiaom.sweetmail.utils.adventure.DefaultAdventureHandler;
+import top.mrxiaom.sweetmail.utils.adventure.serializer.legacy.LegacyComponentSerializer;
 import top.mrxiaom.sweetmail.utils.diapatcher.BukkitDispatcher;
 import top.mrxiaom.sweetmail.utils.diapatcher.FoliaDispatcher;
 import top.mrxiaom.sweetmail.utils.diapatcher.ICommandDispatcher;
@@ -47,10 +48,9 @@ import java.util.*;
 import java.util.function.Consumer;
 
 public class Util {
-    private static BukkitAudiences adventure;
-    public static final Map<String, OfflinePlayer> players = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-    public static final Map<String, OfflinePlayer> playersByUUID = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    private static IAdventureHandler handler;
     private static ICommandDispatcher dispatcher;
+    private static PlayerNameCache playerNameCache;
 
     public static void init(SweetMail plugin) {
         try {
@@ -60,28 +60,14 @@ public class Util {
             dispatcher = BukkitDispatcher.INSTANCE;
         }
         try {
-            adventure = BukkitAudiences.builder(plugin).build();
-            MiniMessageConvert.init();
+            handler = new DefaultAdventureHandler(plugin);
+            MiniMessageConvert.init(plugin, handler);
         } catch (LinkageError e) {
             plugin.warn(plugin.getName() + " 的 adventure 相关库似乎出现了依赖冲突问题，请参考以下链接进行解决");
             plugin.warn("https://plugins.mcio.dev/elopers/base/resolver-override");
             throw e;
         }
-        plugin.getScheduler().runTaskAsync(() -> {
-            for (OfflinePlayer player : Bukkit.getOfflinePlayers()) {
-                if (player.getName() != null) {
-                    players.put(player.getName(), player);
-                    playersByUUID.put(player.getUniqueId().toString().replace("-", ""), player);
-                }
-            }
-        });
-        Bukkit.getPluginManager().registerEvents(new Listener() {
-            @EventHandler
-            public void onJoin(PlayerJoinEvent e) {
-                players.put(e.getPlayer().getName(), e.getPlayer());
-                playersByUUID.put(e.getPlayer().getUniqueId().toString().replace("-", ""), e.getPlayer());
-            }
-        }, plugin);
+        playerNameCache = new PlayerNameCache(plugin);
         PAPI.init();
         ItemsAdder.init();
         Mythic.load();
@@ -90,6 +76,25 @@ public class Util {
 
     public static void dispatchCommand(@NotNull CommandSender sender, @NotNull String commandLine) {
         dispatcher.dispatchCommand(sender, commandLine);
+    }
+
+    /**
+     * 获取 Inventory 的 InventoryHolder 实例
+     * @return 在 Folia 服务端，如果是 BlockInventoryHolder，会因为异步调用方块而报错。该报错会被捕捉，返回 <code>null</code>。
+     */
+    @Nullable
+    public static InventoryHolder getHolder(@NotNull Inventory inv) {
+        // 因为 Folia 非要找存在感，把日志打出来，所以需要增加额外判定
+        try {
+            // 这个 getLocation() 在 1.9 加入，所以只要这里报错，也可以放心调用 .getHolder()
+            if (inv.getLocation() != null) return null;
+        } catch (Throwable ignored) {
+        }
+        try {
+            return inv.getHolder();
+        } catch (Throwable ignored) { // fuck folia
+            return null;
+        }
     }
 
     public static List<Character> toCharList(String s) {
@@ -126,10 +131,6 @@ public class Util {
     }
 
     public static void onDisable() {
-        if (adventure != null) {
-            adventure.close();
-            adventure = null;
-        }
     }
 
     public static Component miniMessage(String s) {
@@ -153,7 +154,7 @@ public class Util {
         if (sender instanceof Audience) {
             return (Audience) sender;
         }
-        return adventure.sender(sender);
+        return handler.of(sender);
     }
 
     public static void sendTitle(Player player, String title, String subTitle, int fadeIn, int stay, int fadeOut) {
@@ -247,33 +248,49 @@ public class Util {
 
     public static String getPlayerName(String s) {
         if (SweetMail.getInstance().isOnlineMode()) {
-            OfflinePlayer offline = playersByUUID.get(s);
+            OfflinePlayer offline = getOfflinePlayer(s).orElse(null);
             return offline == null || offline.getName() == null ? s : offline.getName();
         }
         return s;
     }
 
+    private static Set<String> offlineNameCache;
     public static List<String> getOfflinePlayers(String input) {
-        List<String> list = new ArrayList<>();
-        String s = input.toLowerCase();
-        for (String player : players.keySet()) {
-            if (player.toLowerCase().startsWith(s)) {
-                list.add(player);
-            }
-        }
-        return list;
+        return playerNameCache.getOfflinePlayerNames(input.toLowerCase(), 32);
     }
 
     public static List<OfflinePlayer> getOfflinePlayers() {
-        return Lists.newArrayList(players.values());
+        return Lists.newArrayList(Bukkit.getOfflinePlayers());
     }
 
     public static Optional<OfflinePlayer> getOfflinePlayer(String name) {
-        return Optional.ofNullable(players.get(name));
+        //noinspection deprecation
+        OfflinePlayer p = Bukkit.getOfflinePlayer(name);
+        return Optional.of(p);
+    }
+
+    public static Optional<OfflinePlayer> getOfflinePlayer(UUID uuid) {
+        OfflinePlayer p = Bukkit.getOfflinePlayer(uuid);
+        String name = p.getName();
+        if (name == null || name.isEmpty()) {
+            // 名字为空代表未加载
+            return Optional.empty();
+        } else {
+            return Optional.of(p);
+        }
     }
 
     public static Optional<OfflinePlayer> getOfflinePlayerByNameOrUUID(String s) {
-        return Optional.ofNullable((SweetMail.getInstance().isOnlineMode() ? playersByUUID : players).get(s));
+        if (SweetMail.getInstance().isOnlineMode()) {
+            try {
+                UUID uuid = UUID.fromString(s);
+                return getOfflinePlayer(uuid);
+            } catch (IllegalArgumentException e) {
+                return Optional.empty();
+            }
+        } else {
+            return getOfflinePlayer(s);
+        }
     }
 
     public static Optional<Player> getOnlinePlayer(String name) {
